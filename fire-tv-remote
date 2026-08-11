@@ -1,0 +1,169 @@
+#!/bin/bash
+
+set -euo pipefail
+
+DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
+CLIENT_HOME="$DATA_HOME/io.github.ypmrg.fire-tv-remote"
+VENV="$CLIENT_HOME/venv"
+ADB_PYTHON="$VENV/bin/python"
+ADB_SHELL_VERSION="0.4.4"
+SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
+SESSION_SCRIPT="${FIRE_TV_REMOTE_SESSION:-$SCRIPT_DIR/fire-tv-remote-session.py}"
+FIRE_TV_HOST="${FIRE_TV_HOST:-192.168.1.100:5555}"
+FIRE_TV_NAME="${FIRE_TV_NAME:-Fire TV Stick}"
+
+# Keep in sync with KEYEVENTS + APP_PACKAGES in fire-tv-remote-session.py
+REMOTE_ACTIONS='up|down|left|right|select|back|home|menu|play-pause|previous|next|volume-down|volume-up|wake|sleep|status|app-netflix|app-prime|app-disney'
+
+usage() {
+  cat <<'EOF'
+Usage: fire-tv-remote [--host HOST] [--name NAME] ACTION
+
+Navigation:
+  up down left right select back home menu
+
+Playback and audio:
+  play-pause previous next volume-down volume-up
+
+Power and status:
+  wake sleep status
+
+Apps:
+  app-netflix app-prime app-disney
+
+Internal:
+  session
+
+ADB Debugging must be enabled on the Fire TV Stick
+(Settings → My Fire TV → Developer options → ADB debugging).
+On first connect, accept the "Allow USB debugging?" prompt on the TV.
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+  --host)
+    [[ $# -ge 2 ]] || {
+      echo "fire-tv-remote: --host needs a value" >&2
+      exit 2
+    }
+    FIRE_TV_HOST="$2"
+    shift 2
+    ;;
+  --name)
+    [[ $# -ge 2 ]] || {
+      echo "fire-tv-remote: --name needs a value" >&2
+      exit 2
+    }
+    FIRE_TV_NAME="$2"
+    shift 2
+    ;;
+  -h | --help)
+    usage
+    exit 0
+    ;;
+  --)
+    shift
+    break
+    ;;
+  -*)
+    echo "fire-tv-remote: unknown option: $1" >&2
+    usage >&2
+    exit 2
+    ;;
+  *)
+    break
+    ;;
+  esac
+done
+
+[[ $# -eq 1 ]] || {
+  usage >&2
+  exit 2
+}
+
+install_client() {
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo "fire-tv-remote: python3 is required" >&2
+    return 1
+  fi
+
+  mkdir -p "$CLIENT_HOME"
+
+  if [[ ! -x "$ADB_PYTHON" ]]; then
+    echo "fire-tv-remote: creating Python environment..." >&2
+    python3 -m venv "$VENV"
+  fi
+
+  if ! "$ADB_PYTHON" -c \
+    "import importlib.metadata as m, sys; sys.exit(m.version('adb-shell') != '$ADB_SHELL_VERSION')" \
+    >/dev/null 2>&1; then
+    echo "fire-tv-remote: installing adb-shell $ADB_SHELL_VERSION..." >&2
+    "$ADB_PYTHON" -m pip install \
+      --disable-pip-version-check \
+      --quiet \
+      "adb-shell[async]==$ADB_SHELL_VERSION"
+  fi
+}
+
+install_client
+
+run_session() {
+  if [[ ! -f "$SESSION_SCRIPT" ]]; then
+    echo "fire-tv-remote: session backend is missing: $SESSION_SCRIPT" >&2
+    return 1
+  fi
+
+  # Start even when the preferred host is down so the UI can discover/authorize
+  # another device.
+  exec "$ADB_PYTHON" "$SESSION_SCRIPT" --host "$FIRE_TV_HOST" --name "$FIRE_TV_NAME"
+}
+
+run_oneshot() {
+  local action="$1"
+  "$ADB_PYTHON" - "$SESSION_SCRIPT" "$FIRE_TV_HOST" "$FIRE_TV_NAME" "$action" <<'PY'
+import asyncio
+import sys
+from importlib.machinery import SourceFileLoader
+from pathlib import Path
+
+session_script = Path(sys.argv[1])
+host = sys.argv[2]
+name = sys.argv[3]
+action = sys.argv[4]
+mod = SourceFileLoader("fire_tv_session", str(session_script)).load_module()
+
+
+async def main() -> int:
+    session = mod.RemoteSession(host, name)
+    try:
+        await session.connect()
+        result = await session.dispatch_connected(action)
+        if result:
+            print(result)
+        return 0
+    except Exception as error:
+        print(f"fire-tv-remote: {error}", file=sys.stderr)
+        return 1
+    finally:
+        await session.close()
+
+
+raise SystemExit(asyncio.run(main()))
+PY
+}
+
+case "$1" in
+session)
+  run_session
+  ;;
+*)
+  if [[ "$1" =~ ^($REMOTE_ACTIONS)$ ]]; then
+    run_oneshot "$1"
+  else
+    echo "fire-tv-remote: unknown action: $1" >&2
+    usage >&2
+    exit 2
+  fi
+  ;;
+esac

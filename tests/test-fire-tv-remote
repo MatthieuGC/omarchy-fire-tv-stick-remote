@@ -1,0 +1,114 @@
+#!/bin/bash
+
+set -euo pipefail
+
+repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+test_root="$(mktemp -d /tmp/fire-tv-remote-test.XXXXXX)"
+trap 'rm -r -- "$test_root"' EXIT
+
+mkdir -p "$test_root/io.github.ypmrg.fire-tv-remote/venv/bin"
+ln -s "$repo_root/tests/fake-python" \
+  "$test_root/io.github.ypmrg.fire-tv-remote/venv/bin/python"
+
+mapfile -t arguments < <(
+  XDG_DATA_HOME="$test_root" \
+    FIRE_TV_HOST="192.168.9.9:5555" \
+    FIRE_TV_NAME="Unconfigured Fire TV" \
+    "$repo_root/fire-tv-remote" session
+)
+
+[[ ${arguments[0]} == "$repo_root/fire-tv-remote-session.py" ]]
+[[ ${arguments[1]} == "--host" ]]
+[[ ${arguments[2]} == "192.168.9.9:5555" ]]
+[[ ${arguments[3]} == "--name" ]]
+[[ ${arguments[4]} == "Unconfigured Fire TV" ]]
+
+python3 - "$repo_root" <<'PY'
+import json
+import re
+import shlex
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+source = (root / "fire-tv-remote-session.py").read_text(encoding="utf-8")
+
+start = source.index("def normalize_host(")
+end = source.index("\ndef host_key(")
+ns = {"re": re, "DEFAULT_ADB_PORT": 5555}
+exec(source[start:end], ns)
+normalize_host = ns["normalize_host"]
+assert normalize_host("192.168.1.10") == ("192.168.1.10", 5555)
+assert normalize_host("192.168.1.10:5556") == ("192.168.1.10", 5556)
+assert normalize_host("firetv.local:5555") == ("firetv.local", 5555)
+assert normalize_host("[fe80::1]:5555") == ("fe80::1", 5555)
+
+avahi_start = source.index("def decode_avahi_value(")
+avahi_end = source.index("\n\nclass RemoteSession", avahi_start)
+avahi_ns = {
+    "re": re,
+    "shlex": shlex,
+    "DEFAULT_ADB_PORT": 5555,
+    "host_key": lambda address, port: f"{address}:{port}",
+}
+exec(source[avahi_start:avahi_end], avahi_ns)
+avahi_output = r'''=;wlan0;IPv4;amzn\.dmgr\058device;_amzn-wplay._tcp;local;android-home.local;192.168.1.147;37343;"a=0" "n=Matthieu's Fire TV" "tr=tcp"'''
+records = avahi_ns["parse_avahi_records"](
+    avahi_output,
+    "_amzn-wplay._tcp",
+)
+assert records == [{
+    "name": "Matthieu's Fire TV",
+    "host": "192.168.1.147:5555",
+    "address": "192.168.1.147",
+    "port": "5555",
+}]
+
+apps_start = source.index("APP_PACKAGES")
+apps_end = source.index("}", apps_start) + 1
+# Only the three UI apps should ship.
+assert '"netflix"' in source[apps_start:apps_end]
+assert '"prime"' in source[apps_start:apps_end]
+assert '"disney"' in source[apps_start:apps_end]
+assert '"youtube"' not in source[apps_start:apps_end]
+assert '"twitch"' not in source[apps_start:apps_end]
+
+manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
+assert manifest["schemaVersion"] == 1
+assert manifest["id"] == "io.github.ypmrg.fire-tv-remote"
+assert manifest["version"] == "1.0.0"
+readme = (root / "README.md").read_text(encoding="utf-8")
+assert "Thomas Evans" in readme
+assert "omarchy-apple-tv-remote" in readme
+assert "ADB debugging" in readme
+assert "github.com/ypMrg/omarchy-fire-tv-stick-remote.git" in readme
+assert "github.com/MatthieuGC/" not in readme
+assert (root / "Widget.qml").is_file()
+assert (root / "assets" / "netflix.svg").is_file()
+assert (root / "assets" / "prime.svg").is_file()
+assert (root / "assets" / "disney.svg").is_file()
+
+widget = (root / "Widget.qml").read_text(encoding="utf-8")
+assert "readonly property int panelHorizontalMargin" in widget
+assert "width: Math.max(0, scroll.width - root.panelHorizontalMargin * 2)" in widget
+assert "root.equalKeyWidth(remoteView.width, 3)" in widget
+assert 'property string pressedAction: ""' in widget
+assert "root.pressedAction === action" in widget
+assert "color: root.controlSurface" in widget
+assert "brand:" not in widget
+assert "autoDetectButton" not in widget
+assert "autoDetectHost" not in widget
+assert "fillHostOnScan" not in widget
+assert "applyDetectedHost(devices)" in widget
+assert r'text: "Authorize ADB for\n"' in widget
+assert r'text: "Authorize ADB for\\n"' not in widget
+print("helpers + assets + app allowlist ok")
+PY
+
+# Wrapper rejects unknown app ids
+if "$repo_root/fire-tv-remote" app-youtube 2>/dev/null; then
+  echo "expected app-youtube to fail" >&2
+  exit 1
+fi
+
+echo "Session starts even when the preferred Fire TV host is unreachable."

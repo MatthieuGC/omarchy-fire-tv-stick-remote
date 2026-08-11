@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.ypmrg.fire-tv-remote",
+  "name": "Fire TV Remote",
+  "version": "1.0.0",
+  "author": "Matthieu G.C.",
+  "license": "MIT",
+  "description": "Keyboard-driven Fire TV Stick remote with Netflix/Prime/Disney+, ADB discovery, and device switching",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Widget.qml"
+  },
+  "barWidget": {
+    "displayName": "Fire TV Remote",
+    "description": "Remote with apps, navigation, playback, volume, power, discovery, and ADB authorization",
+    "category": "Controls",
+    "defaultSection": "right",
+    "allowMultiple": false,
+    "defaults": {
+      "deviceName": "Fire TV Stick",
+      "host": "192.168.1.100:5555"
+    },
+    "schema": [
+      {
+        "key": "deviceName",
+        "type": "string",
+        "label": "Fire TV name",
+        "defaultValue": "Fire TV Stick"
+      },
+      {
+        "key": "host",
+        "type": "string",
+        "label": "Fire TV host (IP or IP:port)",
+        "defaultValue": "192.168.1.100:5555"
+      }
+    ]
+  }
+}
