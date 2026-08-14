@@ -1,4 +1,5 @@
 import QtQuick
+import QtQuick.Effects
 import Quickshell
 import Quickshell.Io
 import qs.Commons
@@ -36,20 +37,21 @@ BarWidget {
   readonly property color foreground: bar ? bar.foreground : Color.foreground
   readonly property color dim: Qt.rgba(foreground.r, foreground.g, foreground.b, 0.58)
   readonly property color accent: bar ? bar.urgent : Color.accent
+  readonly property color offlineColor: bar ? bar.urgent : Color.urgent
+  readonly property color onlineColor: Qt.hsla(
+    0.35,
+    offlineColor.hslSaturation,
+    Math.max(0.38, offlineColor.hslLightness),
+    1
+  )
   readonly property string fontFamily: bar ? bar.fontFamily : "JetBrainsMono Nerd Font"
-  readonly property color controlSurface: Qt.rgba(
-    foreground.r, foreground.g, foreground.b, 0.08
-  )
-  readonly property color controlSurfaceHover: Qt.rgba(
-    foreground.r, foreground.g, foreground.b, 0.15
-  )
-  readonly property color controlSurfacePressed: Qt.rgba(
-    accent.r, accent.g, accent.b, 0.30
-  )
-  readonly property color controlBorder: Qt.rgba(
-    foreground.r, foreground.g, foreground.b, 0.38
-  )
-
+  readonly property string statusHeadline: online ? "ONLINE" : "OFFLINE"
+  readonly property string statusDetail: {
+    var stripped = String(statusText || "").replace(/^(ONLINE|OFFLINE)\s*(·\s*)?/, "")
+    if (stripped === "" || stripped === statusHeadline) return ""
+    return stripped
+  }
+  readonly property color statusHeadlineColor: online ? onlineColor : offlineColor
   // Layout must track [font] base-size. Fixed px keys + Style.font icons overflow
   // when the OS text scale is small/large. Style.space() already follows font
   // scale; clamp glyphs so they never exceed their control box.
@@ -441,14 +443,56 @@ BarWidget {
     onTriggered: root.pressedAction = ""
   }
 
+  component RemoteIcon: Item {
+    id: iconRoot
+    property url source: Qt.resolvedUrl("assets/remote.svg")
+    property alias mipmap: remoteIconImage.mipmap
+    property alias asynchronous: remoteIconImage.asynchronous
+    property alias sourceSize: remoteIconImage.sourceSize
+
+    implicitWidth: Style.bar.iconCanvas
+    implicitHeight: Style.bar.iconCanvas
+
+    Image {
+      id: remoteIconImage
+      anchors.fill: parent
+      source: iconRoot.source
+      fillMode: Image.PreserveAspectFit
+      horizontalAlignment: Image.AlignHCenter
+      verticalAlignment: Image.AlignVCenter
+      smooth: true
+      visible: false
+      layer.enabled: iconRoot.source !== ""
+    }
+
+    MultiEffect {
+      anchors.fill: remoteIconImage
+      source: remoteIconImage
+      visible: iconRoot.source !== ""
+      autoPaddingEnabled: false
+      colorization: 1.0
+      colorizationColor: root.foreground
+    }
+  }
+
+  component StatusCaption: Text {
+    color: root.foreground
+    font.family: root.fontFamily
+    font.pixelSize: root.clampFont(Style.font.caption, Style.space(8), Style.space(12))
+    font.bold: true
+  }
+
   component RemoteKey: Button {
     property string action: ""
+    property string logo: ""
     property real keyWidth: Style.space(40)
     property real keyHeight: Style.space(40)
     property bool visualPressed: root.pressedAction === action
 
     width: keyWidth
     height: keyHeight
+    // Theme owns rounding (Hyprland decoration:rounding via Style.cornerRadius).
+    radius: Style.cornerRadius
     // Clip glyph paint so Nerd Font metrics cannot bleed past the control.
     clip: true
     foreground: root.foreground
@@ -462,57 +506,15 @@ BarWidget {
     Behavior on scale { NumberAnimation { duration: 70 } }
     Behavior on opacity { NumberAnimation { duration: 70 } }
     onClicked: root.sendAction(action)
-  }
 
-  // App launch tiles with official brand SVGs (wordmarks). Geometry tracks
-  // Style.space(); logo is letterboxed inside the tile and never clipped by
-  // OS font size (images are independent of Style.font).
-  component PlatformKey: Rectangle {
-    property string action: ""
-    property string logo: ""
-    property real keyWidth: Style.space(72)
-    property real keyHeight: Math.max(Style.space(32), Math.round(keyWidth * 0.48))
-    property bool visualPressed: platformMouse.pressed || root.pressedAction === action
-
-    width: keyWidth
-    height: keyHeight
-    radius: Style.space(8)
-    clip: true
-    color: root.controlSurface
-    border.width: 1
-    border.color: visualPressed ? root.accent : root.controlBorder
-    scale: visualPressed ? 0.96 : 1
-    Behavior on scale { NumberAnimation { duration: 70 } }
-
-    Rectangle {
-      anchors.fill: parent
-      radius: parent.radius
-      color: platformMouse.pressed || root.pressedAction === action
-        ? root.controlSurfacePressed
-        : root.controlSurfaceHover
-      visible: platformMouse.containsMouse || root.pressedAction === action
-    }
-
-    Image {
+    RemoteIcon {
       anchors.fill: parent
       anchors.margins: Style.space(6)
       source: logo !== "" ? Qt.resolvedUrl(logo) : ""
-      fillMode: Image.PreserveAspectFit
-      horizontalAlignment: Image.AlignHCenter
-      verticalAlignment: Image.AlignVCenter
-      smooth: true
       mipmap: true
       asynchronous: true
       sourceSize.width: Math.round(width * 2)
       sourceSize.height: Math.round(height * 2)
-    }
-
-    MouseArea {
-      id: platformMouse
-      anchors.fill: parent
-      hoverEnabled: true
-      cursorShape: Qt.PointingHandCursor
-      onClicked: root.sendAction(action)
     }
   }
 
@@ -520,10 +522,19 @@ BarWidget {
     id: button
     anchors.fill: parent
     bar: root.bar
-    text: "󰑩"
+    text: ""
+    iconComponent: barRemoteIcon
     active: root.popupOpen
+    useActiveColor: false
     tooltipText: root.activeDeviceName + " Fire TV"
     onPressed: root.popupOpen = !root.popupOpen
+  }
+
+  Component {
+    id: barRemoteIcon
+    RemoteIcon {
+      anchors.fill: parent
+    }
   }
 
   KeyboardPanel {
@@ -586,59 +597,49 @@ BarWidget {
           anchors.horizontalCenter: parent.horizontalCenter
           spacing: Style.space(8)
 
-        Item {
+        Row {
           width: parent.width
-          height: Math.max(titleBlock.implicitHeight, connectionLabel.implicitHeight)
+          spacing: Style.space(9)
 
-          Row {
-            id: titleBlock
-            anchors.left: parent.left
-            anchors.verticalCenter: parent.verticalCenter
-            spacing: Style.space(9)
-
-            Text {
-              text: "󰑩"
-              color: root.foreground
-              font.family: root.fontFamily
-              font.pixelSize: root.clampFont(Style.font.title, Style.space(12), Style.space(18))
-            }
-
-            Column {
-              spacing: Style.space(1)
-
-              Text {
-                text: root.activeDeviceName.toUpperCase()
-                color: root.foreground
-                font.family: root.fontFamily
-                font.pixelSize: root.clampFont(Style.font.subtitle, Style.space(11), Style.space(16))
-                font.bold: true
-                elide: Text.ElideRight
-                width: Math.max(Style.space(80), contentColumn.width * 0.45)
-              }
-
-              Text {
-                text: root.viewMode === "remote" ? "FIRE TV REMOTE"
-                  : root.viewMode === "devices" ? "FIRE TV DEVICES"
-                  : "AUTHORIZE ADB"
-                color: root.dim
-                font.family: root.fontFamily
-                font.pixelSize: root.clampFont(Style.font.caption, Style.space(8), Style.space(12))
-              }
-            }
+          RemoteIcon {
+            id: headerIcon
+            width: root.clampFont(Style.font.title, Style.space(12), Style.space(18))
+            height: width
           }
 
-          Text {
-            id: connectionLabel
-            anchors.right: parent.right
-            anchors.verticalCenter: parent.verticalCenter
-            text: (root.online ? "● " : "○ ") + root.statusText
-            color: root.online ? root.foreground : root.dim
-            font.family: root.fontFamily
-            font.pixelSize: root.clampFont(Style.font.caption, Style.space(8), Style.space(12))
-            font.bold: true
-            elide: Text.ElideLeft
-            width: Math.max(Style.space(72), contentColumn.width * 0.38)
-            horizontalAlignment: Text.AlignRight
+          Column {
+            width: Math.max(Style.space(80), parent.width - parent.spacing - headerIcon.width)
+            spacing: Style.space(1)
+
+            Text {
+              width: parent.width
+              text: root.activeDeviceName.toUpperCase()
+              color: root.foreground
+              font.family: root.fontFamily
+              font.pixelSize: root.clampFont(Style.font.subtitle, Style.space(11), Style.space(16))
+              font.bold: true
+              wrapMode: Text.Wrap
+            }
+
+            Row {
+              spacing: Style.space(5)
+
+              StatusCaption {
+                text: root.online ? "●" : "○"
+                color: root.statusHeadlineColor
+              }
+
+              StatusCaption {
+                text: root.statusHeadline
+                color: root.statusHeadlineColor
+              }
+
+              StatusCaption {
+                visible: root.statusDetail !== ""
+                text: "· " + root.statusDetail
+                wrapMode: Text.Wrap
+              }
+            }
           }
         }
 
@@ -780,17 +781,17 @@ BarWidget {
             anchors.horizontalCenter: parent.horizontalCenter
             spacing: root.keyGap
 
-            PlatformKey {
+            RemoteKey {
               action: "app-netflix"
               logo: "assets/netflix.svg"
               keyWidth: root.equalKeyWidth(remoteView.width, 3)
             }
-            PlatformKey {
+            RemoteKey {
               action: "app-prime"
               logo: "assets/prime.svg"
               keyWidth: root.equalKeyWidth(remoteView.width, 3)
             }
-            PlatformKey {
+            RemoteKey {
               action: "app-disney"
               logo: "assets/disney.svg"
               keyWidth: root.equalKeyWidth(remoteView.width, 3)

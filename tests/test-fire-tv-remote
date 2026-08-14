@@ -76,7 +76,7 @@ assert '"twitch"' not in source[apps_start:apps_end]
 manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
 assert manifest["schemaVersion"] == 1
 assert manifest["id"] == "io.github.ypmrg.fire-tv-remote"
-assert manifest["version"] == "1.0.0"
+assert manifest["version"] == "1.0.1"
 readme = (root / "README.md").read_text(encoding="utf-8")
 assert "Thomas Evans" in readme
 assert "omarchy-apple-tv-remote" in readme
@@ -84,9 +84,23 @@ assert "ADB debugging" in readme
 assert "github.com/ypMrg/omarchy-fire-tv-stick-remote.git" in readme
 assert "github.com/MatthieuGC/" not in readme
 assert (root / "Widget.qml").is_file()
-assert (root / "assets" / "netflix.svg").is_file()
-assert (root / "assets" / "prime.svg").is_file()
-assert (root / "assets" / "disney.svg").is_file()
+for logo_name in ("netflix.svg", "prime.svg", "disney.svg"):
+    logo_path = root / "assets" / logo_name
+    assert logo_path.is_file()
+    logo = logo_path.read_text(encoding="utf-8").lower()
+    # Official dark brand fills vanish on dark themes. Wordmarks must be
+    # light/monochrome so QML can tint them with the theme foreground.
+    assert "#01147c" not in logo
+    assert "#232f3e" not in logo
+    assert "#d81f26" not in logo
+
+icon = (root / "assets" / "remote.svg").read_text(encoding="utf-8")
+assert 'xmlns="http://www.w3.org/2000/svg"' in icon
+assert 'viewBox="0 0 24 24"' in icon
+assert 'fill="none"' in icon
+assert 'stroke="#ffffff"' in icon.lower()
+assert "<script" not in icon.lower()
+assert "currentColor" not in icon
 
 widget = (root / "Widget.qml").read_text(encoding="utf-8")
 assert "readonly property int panelHorizontalMargin" in widget
@@ -94,7 +108,13 @@ assert "width: Math.max(0, scroll.width - root.panelHorizontalMargin * 2)" in wi
 assert "root.equalKeyWidth(remoteView.width, 3)" in widget
 assert 'property string pressedAction: ""' in widget
 assert "root.pressedAction === action" in widget
-assert "color: root.controlSurface" in widget
+assert "component PlatformKey" not in widget
+assert "Math.round(keyWidth * 0.48)" not in widget
+assert "radius: Style.cornerRadius" in widget
+assert "property string logo: \"\"" in widget
+assert "import QtQuick.Effects" in widget
+assert "colorization: 1.0" in widget
+assert "colorizationColor: root.foreground" in widget
 assert "brand:" not in widget
 assert "autoDetectButton" not in widget
 assert "autoDetectHost" not in widget
@@ -102,6 +122,19 @@ assert "fillHostOnScan" not in widget
 assert "applyDetectedHost(devices)" in widget
 assert r'text: "Authorize ADB for\n"' in widget
 assert r'text: "Authorize ADB for\\n"' not in widget
+assert "useActiveColor: false" in widget
+assert 'text: root.viewMode === "remote" ? "FIRE TV REMOTE"' not in widget
+assert "FIRE TV DEVICES" not in widget
+assert "contentColumn.width * 0.45" not in widget
+assert "contentColumn.width * 0.38" not in widget
+assert "readonly property color onlineColor" in widget
+assert "readonly property color offlineColor" in widget
+assert "readonly property string statusHeadline" in widget
+assert "readonly property string statusDetail" in widget
+assert "component RemoteIcon" in widget
+assert 'Qt.resolvedUrl("assets/remote.svg")' in widget
+assert "iconComponent:" in widget
+assert "󰑩" not in widget
 print("helpers + assets + app allowlist ok")
 PY
 
